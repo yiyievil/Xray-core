@@ -12,6 +12,13 @@ import (
 
 //go:generate go run github.com/xtls/xray-core/common/errors/errorgen
 
+type Interface interface {
+	net.Conn
+	Handshake() error
+	VerifyHostname(host string) error
+	NegotiatedProtocol() (name string, mutual bool)
+}
+
 var _ buf.Writer = (*Conn)(nil)
 
 type Conn struct {
@@ -125,6 +132,13 @@ func init() {
 		}
 		i++
 	}
+	weights := utls.DefaultWeights
+	weights.TLSVersMax_Set_VersionTLS13 = 1
+	weights.FirstKeyShare_Set_CurveP256 = 0
+	randomized := utls.HelloRandomized
+	randomized.Seed, _ = utls.NewPRNGSeed()
+	randomized.Weights = &weights
+	PresetFingerprints["randomized"] = &randomized
 }
 
 func GetFingerprint(name string) (fingerprint *utls.ClientHelloID) {
@@ -154,59 +168,52 @@ var PresetFingerprints = map[string]*utls.ClientHelloID{
 	"360":        &utls.Hello360_Auto,
 	"qq":         &utls.HelloQQ_Auto,
 	"random":     nil,
-	"randomized": &utls.HelloRandomized,
+	"randomized": nil,
 }
 
 var ModernFingerprints = map[string]*utls.ClientHelloID{
 	// One of these will be chosen as `random` at startup
-	"hellofirefox_auto":       &utls.HelloFirefox_Auto,
 	"hellofirefox_99":         &utls.HelloFirefox_99,
 	"hellofirefox_102":        &utls.HelloFirefox_102,
 	"hellofirefox_105":        &utls.HelloFirefox_105,
-	"hellochrome_auto":        &utls.HelloChrome_Auto,
 	"hellochrome_83":          &utls.HelloChrome_83,
 	"hellochrome_87":          &utls.HelloChrome_87,
 	"hellochrome_96":          &utls.HelloChrome_96,
 	"hellochrome_100":         &utls.HelloChrome_100,
 	"hellochrome_102":         &utls.HelloChrome_102,
 	"hellochrome_106_shuffle": &utls.HelloChrome_106_Shuffle,
-	"helloios_auto":           &utls.HelloIOS_Auto,
-	"helloios_12_1":           &utls.HelloIOS_12_1,
 	"helloios_13":             &utls.HelloIOS_13,
 	"helloios_14":             &utls.HelloIOS_14,
-	"helloandroid_11_okhttp":  &utls.HelloAndroid_11_OkHttp,
-	"helloedge_auto":          &utls.HelloEdge_Auto,
 	"helloedge_85":            &utls.HelloEdge_85,
 	"helloedge_106":           &utls.HelloEdge_106,
-	"hellosafari_auto":        &utls.HelloSafari_Auto,
 	"hellosafari_16_0":        &utls.HelloSafari_16_0,
-	"hello360_auto":           &utls.Hello360_Auto,
 	"hello360_11_0":           &utls.Hello360_11_0,
-	"helloqq_auto":            &utls.HelloQQ_Auto,
 	"helloqq_11_1":            &utls.HelloQQ_11_1,
 }
 
 var OtherFingerprints = map[string]*utls.ClientHelloID{
-	// Golang, randomized, and fingerprints that are more than 4 years old
-	"hellogolang":           &utls.HelloGolang,
-	"hellorandomized":       &utls.HelloRandomized,
-	"hellorandomizedalpn":   &utls.HelloRandomizedALPN,
-	"hellorandomizednoalpn": &utls.HelloRandomizedNoALPN,
-	"hellofirefox_55":       &utls.HelloFirefox_55,
-	"hellofirefox_56":       &utls.HelloFirefox_56,
-	"hellofirefox_63":       &utls.HelloFirefox_63,
-	"hellofirefox_65":       &utls.HelloFirefox_65,
-	"hellochrome_58":        &utls.HelloChrome_58,
-	"hellochrome_62":        &utls.HelloChrome_62,
-	"hellochrome_70":        &utls.HelloChrome_70,
-	"hellochrome_72":        &utls.HelloChrome_72,
-	"helloios_11_1":         &utls.HelloIOS_11_1,
-	"hello360_7_5":          &utls.Hello360_7_5,
-}
-
-type Interface interface {
-	net.Conn
-	Handshake() error
-	VerifyHostname(host string) error
-	NegotiatedProtocol() (name string, mutual bool)
+	// Golang, randomized, auto, and fingerprints that are too old
+	"hellogolang":            &utls.HelloGolang,
+	"hellorandomized":        &utls.HelloRandomized,
+	"hellorandomizedalpn":    &utls.HelloRandomizedALPN,
+	"hellorandomizednoalpn":  &utls.HelloRandomizedNoALPN,
+	"hellofirefox_auto":      &utls.HelloFirefox_Auto,
+	"hellofirefox_55":        &utls.HelloFirefox_55,
+	"hellofirefox_56":        &utls.HelloFirefox_56,
+	"hellofirefox_63":        &utls.HelloFirefox_63,
+	"hellofirefox_65":        &utls.HelloFirefox_65,
+	"hellochrome_auto":       &utls.HelloChrome_Auto,
+	"hellochrome_58":         &utls.HelloChrome_58,
+	"hellochrome_62":         &utls.HelloChrome_62,
+	"hellochrome_70":         &utls.HelloChrome_70,
+	"hellochrome_72":         &utls.HelloChrome_72,
+	"helloios_auto":          &utls.HelloIOS_Auto,
+	"helloios_11_1":          &utls.HelloIOS_11_1,
+	"helloios_12_1":          &utls.HelloIOS_12_1,
+	"helloandroid_11_okhttp": &utls.HelloAndroid_11_OkHttp,
+	"helloedge_auto":         &utls.HelloEdge_Auto,
+	"hellosafari_auto":       &utls.HelloSafari_Auto,
+	"hello360_auto":          &utls.Hello360_Auto,
+	"hello360_7_5":           &utls.Hello360_7_5,
+	"helloqq_auto":           &utls.HelloQQ_Auto,
 }

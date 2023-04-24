@@ -7,13 +7,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const (
-	// For incoming connections.
-	TCP_FASTOPEN = 23
-	// For out-going connections.
-	TCP_FASTOPEN_CONNECT = 30
-)
-
 func bindAddr(fd uintptr, ip []byte, port uint32) error {
 	setReuseAddr(fd)
 	setReusePort(fd)
@@ -46,12 +39,12 @@ func applyOutboundSocketOptions(network string, address string, fd uintptr, conf
 			return newError("failed to set SO_MARK").Base(err)
 		}
 	}
-	
-	if  config.Interface != "" {
-                if err := syscall.BindToDevice(int(fd), config.Interface); err != nil {
-                        return newError("failed to set Interface").Base(err)
-                }
-        }
+
+	if config.Interface != "" {
+		if err := syscall.BindToDevice(int(fd), config.Interface); err != nil {
+			return newError("failed to set Interface").Base(err)
+		}
+	}
 
 	if isTCPSocket(network) {
 		tfo := config.ParseTFOValue()
@@ -59,8 +52,8 @@ func applyOutboundSocketOptions(network string, address string, fd uintptr, conf
 			tfo = 1
 		}
 		if tfo >= 0 {
-			if err := syscall.SetsockoptInt(int(fd), syscall.SOL_TCP, TCP_FASTOPEN_CONNECT, tfo); err != nil {
-				return newError("failed to set TCP_FASTOPEN_CONNECT=", tfo).Base(err)
+			if err := syscall.SetsockoptInt(int(fd), syscall.SOL_TCP, unix.TCP_FASTOPEN_CONNECT, tfo); err != nil {
+				return newError("failed to set TCP_FASTOPEN_CONNECT", tfo).Base(err)
 			}
 		}
 
@@ -87,6 +80,18 @@ func applyOutboundSocketOptions(network string, address string, fd uintptr, conf
 		if config.TcpCongestion != "" {
 			if err := syscall.SetsockoptString(int(fd), syscall.SOL_TCP, syscall.TCP_CONGESTION, config.TcpCongestion); err != nil {
 				return newError("failed to set TCP_CONGESTION", err)
+			}
+		}
+
+		if config.TcpWindowClamp > 0 {
+			if err := syscall.SetsockoptInt(int(fd), syscall.IPPROTO_TCP, syscall.TCP_WINDOW_CLAMP, int(config.TcpWindowClamp)); err != nil {
+				return newError("failed to set TCP_WINDOW_CLAMP", err)
+			}
+		}
+
+		if config.TcpUserTimeout > 0 {
+			if err := syscall.SetsockoptInt(int(fd), syscall.IPPROTO_TCP, unix.TCP_USER_TIMEOUT, int(config.TcpUserTimeout)); err != nil {
+				return newError("failed to set TCP_USER_TIMEOUT", err)
 			}
 		}
 	}
@@ -109,8 +114,8 @@ func applyInboundSocketOptions(network string, fd uintptr, config *SocketConfig)
 	if isTCPSocket(network) {
 		tfo := config.ParseTFOValue()
 		if tfo >= 0 {
-			if err := syscall.SetsockoptInt(int(fd), syscall.SOL_TCP, TCP_FASTOPEN, tfo); err != nil {
-				return newError("failed to set TCP_FASTOPEN=", tfo).Base(err)
+			if err := syscall.SetsockoptInt(int(fd), syscall.SOL_TCP, unix.TCP_FASTOPEN, tfo); err != nil {
+				return newError("failed to set TCP_FASTOPEN", tfo).Base(err)
 			}
 		}
 
@@ -139,6 +144,18 @@ func applyInboundSocketOptions(network string, fd uintptr, config *SocketConfig)
 				return newError("failed to set TCP_CONGESTION", err)
 			}
 		}
+
+		if config.TcpWindowClamp > 0 {
+			if err := syscall.SetsockoptInt(int(fd), syscall.IPPROTO_TCP, syscall.TCP_WINDOW_CLAMP, int(config.TcpWindowClamp)); err != nil {
+				return newError("failed to set TCP_WINDOW_CLAMP", err)
+			}
+		}
+
+		if config.TcpUserTimeout > 0 {
+			if err := syscall.SetsockoptInt(int(fd), syscall.IPPROTO_TCP, unix.TCP_USER_TIMEOUT, int(config.TcpUserTimeout)); err != nil {
+				return newError("failed to set TCP_USER_TIMEOUT", err)
+			}
+		}
 	}
 
 	if config.Tproxy.IsEnabled() {
@@ -152,6 +169,12 @@ func applyInboundSocketOptions(network string, fd uintptr, config *SocketConfig)
 		err2 := syscall.SetsockoptInt(int(fd), syscall.SOL_IP, syscall.IP_RECVORIGDSTADDR, 1)
 		if err1 != nil && err2 != nil {
 			return err1
+		}
+	}
+
+	if config.V6Only {
+		if err := syscall.SetsockoptInt(int(fd), syscall.SOL_IPV6, syscall.IPV6_V6ONLY, 1); err != nil {
+			return newError("failed to set IPV6_V6ONLY", err)
 		}
 	}
 

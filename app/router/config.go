@@ -1,6 +1,9 @@
 package router
 
 import (
+	"regexp"
+	"strings"
+
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/features/routing"
@@ -143,11 +146,11 @@ func (rr *RoutingRule) BuildCondition() (Condition, error) {
 	}
 
 	if len(rr.Attributes) > 0 {
-		cond, err := NewAttributeMatcher(rr.Attributes)
-		if err != nil {
-			return nil, err
+		configuredKeys := make(map[string]*regexp.Regexp)
+		for key, value := range rr.Attributes {
+			configuredKeys[strings.ToLower(key)] = regexp.MustCompile(value)
 		}
-		conds.Add(cond)
+		conds.Add(&AttributeMatcher{configuredKeys})
 	}
 
 	if conds.Len() == 0 {

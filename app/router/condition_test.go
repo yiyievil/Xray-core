@@ -307,12 +307,27 @@ func TestRoutingRule(t *testing.T) {
 		},
 		{
 			rule: &RoutingRule{
-				Protocol:   []string{"http"},
-				Attributes: "attrs[':path'].startswith('/test')",
+				Protocol: []string{"http"},
+				Attributes: map[string]string{
+					":path": "/test",
+				},
 			},
 			test: []ruleTest{
 				{
 					input:  withContent(&session.Content{Protocol: "http/1.1", Attributes: map[string]string{":path": "/test/1"}}),
+					output: true,
+				},
+			},
+		},
+		{
+			rule: &RoutingRule{
+				Attributes: map[string]string{
+					"Custom": "p([a-z]+)ch",
+				},
+			},
+			test: []ruleTest{
+				{
+					input:  withContent(&session.Content{Attributes: map[string]string{"custom": "peach"}}),
 					output: true,
 				},
 			},

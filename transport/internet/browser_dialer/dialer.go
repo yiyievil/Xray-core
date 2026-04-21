@@ -5,6 +5,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -16,6 +17,13 @@ import (
 
 //go:embed dialer.html
 var webpage []byte
+
+type task struct {
+	Method string `json:"method"`
+	URL    string `json:"url"`
+	Extra  any    `json:"extra,omitempty"`
+	StreamResponse bool `json:"streamResponse"`
+}
 
 var conns chan *websocket.Conn
 
@@ -45,6 +53,7 @@ func init() {
 					}
 				}
 			} else {
+				w.Header().Set("Access-Control-Allow-Origin", "*");
 				w.Write(webpage)
 			}
 		}))
@@ -55,23 +64,84 @@ func HasBrowserDialer() bool {
 	return conns != nil
 }
 
+type webSocketExtra struct {
+	Protocol string `json:"protocol,omitempty"`
+}
+
 func DialWS(uri string, ed []byte) (*websocket.Conn, error) {
-	data := []byte("WS " + uri)
-	if ed != nil {
-		data = append(data, " "+base64.RawURLEncoding.EncodeToString(ed)...)
+	task := task{
+		Method: "WS",
+		URL:    uri,
+		StreamResponse: true,
 	}
 
-	return dialRaw(data)
+	if ed != nil {
+		task.Extra = webSocketExtra{
+			Protocol: base64.RawURLEncoding.EncodeToString(ed),
+		}
+	}
+
+	return dialTask(task)
 }
 
-func DialGet(uri string) (*websocket.Conn, error) {
-	data := []byte("GET " + uri)
-	return dialRaw(data)
+type httpExtra struct {
+	Referrer string            `json:"referrer,omitempty"`
+	Headers  map[string]string `json:"headers,omitempty"`
+	Cookies  map[string]string `json:"cookies,omitempty"`
 }
 
-func DialPost(uri string, payload []byte) error {
-	data := []byte("POST " + uri)
-	conn, err := dialRaw(data)
+func httpExtraFromHeadersAndCookies(headers http.Header, cookies []*http.Cookie) *httpExtra {
+	if len(headers) == 0 {
+		return nil
+	}
+
+	extra := httpExtra{}
+	if referrer := headers.Get("Referer"); referrer != "" {
+		extra.Referrer = referrer
+		headers.Del("Referer")
+	}
+
+	if len(headers) > 0 {
+		extra.Headers = make(map[string]string)
+		for header := range headers {
+			extra.Headers[header] = headers.Get(header)
+		}
+	}
+
+	if len(cookies) > 0 {
+		extra.Cookies = make(map[string]string)
+		for _, cookie := range cookies {
+			extra.Cookies[cookie.Name] = cookie.Value
+		}
+	}
+
+	return &extra
+}
+
+func DialGet(uri string, headers http.Header, cookies []*http.Cookie) (*websocket.Conn, error) {
+	task := task{
+		Method: "GET",
+		URL:    uri,
+		Extra:  httpExtraFromHeadersAndCookies(headers, cookies),
+		StreamResponse: true,
+	}
+
+	return dialTask(task)
+}
+
+func DialPacket(method string, uri string, headers http.Header, cookies []*http.Cookie, payload []byte) error {
+	return dialWithBody(method, uri, headers, cookies, payload)
+}
+
+func dialWithBody(method string, uri string, headers http.Header, cookies []*http.Cookie, payload []byte) error {
+	task := task{
+		Method: method,
+		URL:    uri,
+		Extra:  httpExtraFromHeadersAndCookies(headers, cookies),
+		StreamResponse: false,
+	}
+
+	conn, err := dialTask(task)
 	if err != nil {
 		return err
 	}
@@ -90,7 +160,12 @@ func DialPost(uri string, payload []byte) error {
 	return nil
 }
 
-func dialRaw(data []byte) (*websocket.Conn, error) {
+func dialTask(task task) (*websocket.Conn, error) {
+	data, err := json.Marshal(task)
+	if err != nil {
+		return nil, err
+	}
+
 	var conn *websocket.Conn
 	for {
 		conn = <-conns
@@ -100,7 +175,7 @@ func dialRaw(data []byte) (*websocket.Conn, error) {
 			break
 		}
 	}
-	err := CheckOK(conn)
+	err = CheckOK(conn)
 	if err != nil {
 		return nil, err
 	}

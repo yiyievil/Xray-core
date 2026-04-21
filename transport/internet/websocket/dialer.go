@@ -5,7 +5,6 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"io"
-	gonet "net"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -49,7 +48,21 @@ func dialWebSocket(ctx context.Context, dest net.Destination, streamSettings *in
 
 	dialer := &websocket.Dialer{
 		NetDial: func(network, addr string) (net.Conn, error) {
-			return internet.DialSystem(ctx, dest, streamSettings.SocketSettings)
+			conn, err := internet.DialSystem(ctx, dest, streamSettings.SocketSettings)
+			if err != nil {
+				return nil, err
+			}
+
+			if streamSettings.TcpmaskManager != nil {
+				newConn, err := streamSettings.TcpmaskManager.WrapConnClient(conn)
+				if err != nil {
+					conn.Close()
+					return nil, errors.New("mask err").Base(err)
+				}
+				conn = newConn
+			}
+
+			return conn, err
 		},
 		ReadBufferSize:   4 * 1024,
 		WriteBufferSize:  4 * 1024,
@@ -58,18 +71,29 @@ func dialWebSocket(ctx context.Context, dest net.Destination, streamSettings *in
 
 	protocol := "ws"
 
-	if config := tls.ConfigFromStreamSettings(streamSettings); config != nil {
+	tConfig := tls.ConfigFromStreamSettings(streamSettings)
+	if tConfig != nil {
 		protocol = "wss"
-		tlsConfig := config.GetTLSConfig(tls.WithDestination(dest), tls.WithNextProto("http/1.1"))
+		tlsConfig := tConfig.GetTLSConfig(tls.WithDestination(dest), tls.WithNextProto("http/1.1"))
 		dialer.TLSClientConfig = tlsConfig
-		if fingerprint := tls.GetFingerprint(config.Fingerprint); fingerprint != nil {
-			dialer.NetDialTLSContext = func(_ context.Context, _, addr string) (gonet.Conn, error) {
+		if fingerprint := tls.GetFingerprint(tConfig.Fingerprint); fingerprint != nil {
+			dialer.NetDialTLSContext = func(_ context.Context, _, addr string) (net.Conn, error) {
 				// Like the NetDial in the dialer
 				pconn, err := internet.DialSystem(ctx, dest, streamSettings.SocketSettings)
 				if err != nil {
 					errors.LogErrorInner(ctx, err, "failed to dial to "+addr)
 					return nil, err
 				}
+
+				if streamSettings.TcpmaskManager != nil {
+					newConn, err := streamSettings.TcpmaskManager.WrapConnClient(pconn)
+					if err != nil {
+						pconn.Close()
+						return nil, errors.New("mask err").Base(err)
+					}
+					pconn = newConn
+				}
+
 				// TLS and apply the handshake
 				cn := tls.UClient(pconn, tlsConfig, fingerprint).(*tls.UConn)
 				if err := cn.WebsocketHandshakeContext(ctx); err != nil {
@@ -99,10 +123,18 @@ func dialWebSocket(ctx context.Context, dest net.Destination, streamSettings *in
 			return nil, err
 		}
 
-		return NewConnection(conn, conn.RemoteAddr(), nil), nil
+		return NewConnection(conn, conn.RemoteAddr(), nil, wsSettings.HeartbeatPeriod), nil
 	}
 
 	header := wsSettings.GetRequestHeader()
+	// See dialer.DialContext()
+	header.Set("Host", wsSettings.Host)
+	if header.Get("Host") == "" && tConfig != nil {
+		header.Set("Host", tConfig.ServerName)
+	}
+	if header.Get("Host") == "" {
+		header.Set("Host", dest.Address.String())
+	}
 	if ed != nil {
 		// RawURLEncoding is support by both V2Ray/V2Fly and XRay.
 		header.Set("Sec-WebSocket-Protocol", base64.RawURLEncoding.EncodeToString(ed))
@@ -117,7 +149,7 @@ func dialWebSocket(ctx context.Context, dest net.Destination, streamSettings *in
 		return nil, errors.New("failed to dial to (", uri, "): ", reason).Base(err)
 	}
 
-	return NewConnection(conn, conn.RemoteAddr(), nil), nil
+	return NewConnection(conn, conn.RemoteAddr(), nil, wsSettings.HeartbeatPeriod), nil
 }
 
 type delayDialConn struct {

@@ -2,66 +2,77 @@ package conf
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"net"
 	"strings"
 
 	"github.com/xtls/xray-core/common/errors"
+	"github.com/xtls/xray-core/common/geodata"
 	v2net "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/proxy/freedom"
+	"github.com/xtls/xray-core/transport/internet"
 	"google.golang.org/protobuf/proto"
 )
 
 type FreedomConfig struct {
-	DomainStrategy string    `json:"domainStrategy"`
-	Redirect       string    `json:"redirect"`
-	UserLevel      uint32    `json:"userLevel"`
-	Fragment       *Fragment `json:"fragment"`
-	Noise          *Noise    `json:"noise"`
-	Noises         []*Noise  `json:"noises"`
-	ProxyProtocol  uint32    `json:"proxyProtocol"`
+	TargetStrategy string      `json:"targetStrategy"`
+	DomainStrategy string      `json:"domainStrategy"`
+	Redirect       string      `json:"redirect"`
+	UserLevel      uint32      `json:"userLevel"`
+	Fragment       *Fragment   `json:"fragment"`
+	Noise          *Noise      `json:"noise"`
+	Noises         []*Noise    `json:"noises"`
+	ProxyProtocol  uint32      `json:"proxyProtocol"`
+	IPsBlocked     *StringList `json:"ipsBlocked"`
 }
 
 type Fragment struct {
 	Packets  string      `json:"packets"`
 	Length   *Int32Range `json:"length"`
 	Interval *Int32Range `json:"interval"`
+	MaxSplit *Int32Range `json:"maxSplit"`
 }
 
 type Noise struct {
-	Type   string      `json:"type"`
-	Packet string      `json:"packet"`
-	Delay  *Int32Range `json:"delay"`
+	Type    string      `json:"type"`
+	Packet  string      `json:"packet"`
+	Delay   *Int32Range `json:"delay"`
+	ApplyTo string      `json:"applyTo"`
 }
 
 // Build implements Buildable
 func (c *FreedomConfig) Build() (proto.Message, error) {
 	config := new(freedom.Config)
-	switch strings.ToLower(c.DomainStrategy) {
+	targetStrategy := c.TargetStrategy
+	if targetStrategy == "" {
+		targetStrategy = c.DomainStrategy
+	}
+	switch strings.ToLower(targetStrategy) {
 	case "asis", "":
-		config.DomainStrategy = freedom.Config_AS_IS
+		config.DomainStrategy = internet.DomainStrategy_AS_IS
 	case "useip":
-		config.DomainStrategy = freedom.Config_USE_IP
+		config.DomainStrategy = internet.DomainStrategy_USE_IP
 	case "useipv4":
-		config.DomainStrategy = freedom.Config_USE_IP4
+		config.DomainStrategy = internet.DomainStrategy_USE_IP4
 	case "useipv6":
-		config.DomainStrategy = freedom.Config_USE_IP6
+		config.DomainStrategy = internet.DomainStrategy_USE_IP6
 	case "useipv4v6":
-		config.DomainStrategy = freedom.Config_USE_IP46
+		config.DomainStrategy = internet.DomainStrategy_USE_IP46
 	case "useipv6v4":
-		config.DomainStrategy = freedom.Config_USE_IP64
+		config.DomainStrategy = internet.DomainStrategy_USE_IP64
 	case "forceip":
-		config.DomainStrategy = freedom.Config_FORCE_IP
+		config.DomainStrategy = internet.DomainStrategy_FORCE_IP
 	case "forceipv4":
-		config.DomainStrategy = freedom.Config_FORCE_IP4
+		config.DomainStrategy = internet.DomainStrategy_FORCE_IP4
 	case "forceipv6":
-		config.DomainStrategy = freedom.Config_FORCE_IP6
+		config.DomainStrategy = internet.DomainStrategy_FORCE_IP6
 	case "forceipv4v6":
-		config.DomainStrategy = freedom.Config_FORCE_IP46
+		config.DomainStrategy = internet.DomainStrategy_FORCE_IP46
 	case "forceipv6v4":
-		config.DomainStrategy = freedom.Config_FORCE_IP64
+		config.DomainStrategy = internet.DomainStrategy_FORCE_IP64
 	default:
-		return nil, errors.New("unsupported domain strategy: ", c.DomainStrategy)
+		return nil, errors.New("unsupported domain strategy: ", targetStrategy)
 	}
 
 	if c.Fragment != nil {
@@ -107,6 +118,13 @@ func (c *FreedomConfig) Build() (proto.Message, error) {
 			config.Fragment.IntervalMin = uint64(c.Fragment.Interval.From)
 			config.Fragment.IntervalMax = uint64(c.Fragment.Interval.To)
 		}
+
+		{
+			if c.Fragment.MaxSplit != nil {
+				config.Fragment.MaxSplitMin = uint64(c.Fragment.MaxSplit.From)
+				config.Fragment.MaxSplitMax = uint64(c.Fragment.MaxSplit.To)
+			}
+		}
 	}
 
 	if c.Noise != nil {
@@ -146,14 +164,22 @@ func (c *FreedomConfig) Build() (proto.Message, error) {
 	if c.ProxyProtocol > 0 && c.ProxyProtocol <= 2 {
 		config.ProxyProtocol = c.ProxyProtocol
 	}
+	if c.IPsBlocked != nil {
+		rules, err := geodata.ParseIPRules(*c.IPsBlocked)
+		if err != nil {
+			return nil, err
+		}
+		config.IpsBlocked = &freedom.IPRules{Rules: rules}
+	}
 	return config, nil
 }
 
 func ParseNoise(noise *Noise) (*freedom.Noise, error) {
 	var err error
 	NConfig := new(freedom.Noise)
+	noise.Packet = strings.TrimSpace(noise.Packet)
 
-	switch strings.ToLower(noise.Type) {
+	switch noise.Type {
 	case "rand":
 		min, max, err := ParseRangeString(noise.Packet)
 		if err != nil {
@@ -161,42 +187,45 @@ func ParseNoise(noise *Noise) (*freedom.Noise, error) {
 		}
 		NConfig.LengthMin = uint64(min)
 		NConfig.LengthMax = uint64(max)
-		if NConfig.LengthMin > NConfig.LengthMax {
-			NConfig.LengthMin, NConfig.LengthMax = NConfig.LengthMax, NConfig.LengthMin
-		}
 		if NConfig.LengthMin == 0 {
 			return nil, errors.New("rand lengthMin or lengthMax cannot be 0")
 		}
 
 	case "str":
-		//user input string
-		NConfig.StrNoise = []byte(strings.TrimSpace(noise.Packet))
+		// user input string
+		NConfig.Packet = []byte(noise.Packet)
+
+	case "hex":
+		// user input hex
+		NConfig.Packet, err = hex.DecodeString(noise.Packet)
+		if err != nil {
+			return nil, errors.New("Invalid hex string").Base(err)
+		}
 
 	case "base64":
-		//user input base64
-		NConfig.StrNoise, err = base64.StdEncoding.DecodeString(strings.TrimSpace(noise.Packet))
+		// user input base64
+		NConfig.Packet, err = base64.RawURLEncoding.DecodeString(strings.NewReplacer("+", "-", "/", "_", "=", "").Replace(noise.Packet))
 		if err != nil {
-			return nil, errors.New("Invalid base64 string")
+			return nil, errors.New("Invalid base64 string").Base(err)
 		}
 
 	default:
-		return nil, errors.New("Invalid packet,only rand,str,base64 are supported")
+		return nil, errors.New("Invalid packet, only rand/str/hex/base64 are supported")
 	}
 
 	if noise.Delay != nil {
-		if noise.Delay.From != 0 && noise.Delay.To != 0 {
-			NConfig.DelayMin = uint64(noise.Delay.From)
-			NConfig.DelayMax = uint64(noise.Delay.To)
-			if NConfig.DelayMin > NConfig.LengthMax {
-				NConfig.DelayMin, NConfig.DelayMax = NConfig.LengthMax, NConfig.DelayMin
-			}
-		} else {
-			return nil, errors.New("DelayMin or DelayMax cannot be zero")
-		}
-
-	} else {
-		NConfig.DelayMin = 0
-		NConfig.DelayMax = 0
+		NConfig.DelayMin = uint64(noise.Delay.From)
+		NConfig.DelayMax = uint64(noise.Delay.To)
+	}
+	switch strings.ToLower(noise.ApplyTo) {
+	case "", "ip", "all":
+		NConfig.ApplyTo = "ip"
+	case "ipv4":
+		NConfig.ApplyTo = "ipv4"
+	case "ipv6":
+		NConfig.ApplyTo = "ipv6"
+	default:
+		return nil, errors.New("Invalid applyTo, only ip/ipv4/ipv6 are supported")
 	}
 	return NConfig, nil
 }
